@@ -66,7 +66,7 @@ class NashAgent(Agent):
         # Player 2 after a check from player 1
         if history == [check]:
             if hand == 1:
-                return check
+                return bet if self._rng.random() < a else check
             if hand == 2:
                 return bet if self._rng.random() < max(0, 1 - 3 * a) else check
             if hand == 3:

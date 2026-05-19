@@ -43,14 +43,34 @@ Seeds for reproducibility:
 
 # ————— Hyperparameters ————— #
 
-n_epochs = 100000
-nn = NumNet(input_size=12, hidden_size=20, output_size=4, learning_rate=5e-5)
+n_epochs = 500000
+learning_rate = 5e-6
+adam_beta1 = 0.9
+adam_beta2 = 0.999
+adam_epsilon = 1e-8
+nn = NumNet(
+    input_size=12,
+    hidden_size=20,
+    output_size=4,
+    learning_rate=learning_rate,
+    beta1=adam_beta1,
+    beta2=adam_beta2,
+    epsilon=adam_epsilon,
+)
+
 agent = NashAgent()
 initial_lr = nn.lr
+use_learning_rate_decay = True
+use_baseline = True
 baseline_momentum = 0.10
+use_baseline_bound = True
 baseline_bound = 15
+use_entropy_bonus = False
 initial_entropy_coeff = 0.01
-gradient_clip = 10.0
+use_entropy_decay = True
+entropy_coeff = initial_entropy_coeff if use_entropy_bonus else 0.0
+use_gradient_clipping = True
+gradient_clip = 7.0
 
 
 
@@ -59,16 +79,26 @@ gradient_clip = 10.0
 metadata = {
     "implementation": "numpy",
     "agent": agent.name,
+    "optimizer": "adam",
     "input_size": nn.input_size,
     "hidden_size": nn.hidden_size,
     "output_size": nn.output_size,
     "initial_learning_rate": initial_lr,
+    "adam_beta1": nn.beta1,
+    "adam_beta2": nn.beta2,
+    "adam_epsilon": nn.epsilon,
+    "use_learning_rate_decay": use_learning_rate_decay,
     "activation": "ReLU",
     "number_epochs": n_epochs,
+    "use_baseline": use_baseline,
     "baseline_momentum": baseline_momentum,
+    "use_baseline_bound": use_baseline_bound,
     "baseline_bound": baseline_bound,
-    "entropy_coeff": initial_entropy_coeff,
+    "use_entropy_bonus": use_entropy_bonus,
+    "initial_entropy_coeff": initial_entropy_coeff,
+    "use_entropy_decay": use_entropy_decay,
     "random_seed": random_seed,
+    "use_gradient_clipping": use_gradient_clipping,
     "gradient_clip": gradient_clip,
 }   
 
@@ -161,14 +191,21 @@ def update_baseline(baseline: float, reward: float) -> float:
     """
     Updates the baseline to reduce variance, bounded in [-bound, bound]. 
     """
+    if not use_baseline:
+        return 0.0
+
     momentum, bound = baseline_momentum, baseline_bound
 
     if not (0 < momentum < 1): # If momentum is 0, there is no baseline. If momentum is 1, the baseline is the reward.
         raise ValueError("Momentum must be in ]0, 1[.")
-    if bound <= 0:
-        raise ValueError("Bound must be positive.")
 
     baseline = baseline * momentum + reward * (1 - momentum)
+
+    if not use_baseline_bound:
+        return baseline
+
+    if bound <= 0:
+        raise ValueError("Bound must be positive.")
 
     return max(-bound, min(bound, baseline))  # Ensure baseline is within bounds
 
@@ -184,18 +221,22 @@ def update_advantage(baseline: float, reward: float) -> float:
 
 def learning_rate_decay(episode: int) -> float:
     """
-    Linearly decays the learning rate based on the episode number.
-    ``decay_rate`` is in ]0, 1].
-    If decay_rate is 0, no learning occurs. If decay_rate is 1, the learning rate is constant.
+    Returns the learning rate for the current episode.
     """  
+    if not use_learning_rate_decay:
+        return initial_lr
     return initial_lr * (1 - episode / n_epochs)
 
 
 
 def entropy_coeff_decay(episode: int) -> float:
     """
-    Linearly decays the entropy coefficient from its initial value.
+    Returns the entropy coefficient for the current episode.
     """
+    if not use_entropy_bonus:
+        return 0.0
+    if not use_entropy_decay:
+        return initial_entropy_coeff
     return initial_entropy_coeff * (1 - episode / n_epochs)
 
 
@@ -323,7 +364,9 @@ def update_nn(trajectory: list[tuple[np.ndarray, int, np.ndarray]], advantage: f
 
     for X, action_index, probs in trajectory:
         entropy = entropy_loss(probs)
-        step_advantage = advantage + entropy_coeff * entropy 
+        step_advantage = advantage
+        if use_entropy_bonus:
+            step_advantage += entropy_coeff * entropy
 
         nn.forward(X)
         gW1, gb1, gW2, gb2 = nn.backward(action_index, step_advantage, probs)
@@ -337,7 +380,8 @@ def update_nn(trajectory: list[tuple[np.ndarray, int, np.ndarray]], advantage: f
     dW2 /= len(trajectory)
     db2 /= len(trajectory)
 
-    dW1, db1, dW2, db2 = clip_gradients(dW1, db1, dW2, db2) 
+    if use_gradient_clipping:
+        dW1, db1, dW2, db2 = clip_gradients(dW1, db1, dW2, db2) 
 
     grad_norm = np.sqrt(np.sum(dW1**2) + np.sum(db1**2) + np.sum(dW2**2) + np.sum(db2**2))
     nn.update(dW1, db1, dW2, db2)
@@ -389,6 +433,8 @@ def main() -> None:
     """
     save_metadata(metadata, RUN_DIR)
     baseline = 0.0 # Initial baseline
+    global entropy_coeff
+    entropy_coeff = initial_entropy_coeff if use_entropy_bonus else 0.0
     state = env.reset() # Initial state of the game
     episode_data: list[dict] = [] # Stores data for each episode, to be analyzed by data_analysis.py
     training_dir = os.path.join(RUN_DIR, "training")
@@ -402,7 +448,6 @@ def main() -> None:
         fixed_baseline = baseline
         baseline = update_baseline(baseline, reward)
         nn.lr = learning_rate_decay(e)
-        global entropy_coeff
         entropy_coeff = entropy_coeff_decay(e)
         grad_norm = update_nn(trajectory, advantage)
         if done:
@@ -416,7 +461,11 @@ def main() -> None:
 if __name__ == "__main__":
     RUN_DIR = create_run_dir("bot_train")
     main()
-    print("1/2 - Training completed.")
+    nn.save(os.path.join(RUN_DIR, "model.npz"))
+    print("1/3 - Training completed.")
     analysis_script = os.path.join(FILE_DIR, "train_analysis.py")
     subprocess.run([sys.executable, analysis_script, RUN_DIR], check=True)
-    print("2/2 - Analysis completed.")
+    print("2/3 - Analysis completed.")
+    testing_script = os.path.join(FILE_DIR, "bot_test.py")
+    subprocess.run([sys.executable, testing_script, RUN_DIR], check=True)
+    print("3/3 - Testing completed.")

@@ -7,12 +7,17 @@ import numpy as np
 
 
 class NumNet:
-    """Simple two-layer feedforward network for REINFORCE."""
-    def __init__(self, input_size:int, hidden_size:int, output_size:int, learning_rate: float):
+    """Simple two-layer feedforward network with Adam Optimizer for REINFORCE."""
+    def __init__(self, input_size: int, hidden_size: int, output_size: int, learning_rate: float, 
+                 beta1: float, beta2: float, epsilon: float):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.lr = learning_rate
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.epsilon = epsilon
+        self.t = 0
 
         # Storing intermediate values
         self.state_features = np.zeros(input_size)
@@ -27,6 +32,15 @@ class NumNet:
         # Hidden to Output
         self.W2 = np.random.randn(hidden_size, output_size) * np.sqrt(2 / hidden_size)
         self.b2 = np.zeros(output_size)
+
+        self.mW1 = np.zeros_like(self.W1)
+        self.vW1 = np.zeros_like(self.W1)
+        self.mb1 = np.zeros_like(self.b1)
+        self.vb1 = np.zeros_like(self.b1)
+        self.mW2 = np.zeros_like(self.W2)
+        self.vW2 = np.zeros_like(self.W2)
+        self.mb2 = np.zeros_like(self.b2)
+        self.vb2 = np.zeros_like(self.b2)
 
 
     def forward(self, state_features: np.ndarray) -> np.ndarray:
@@ -78,9 +92,55 @@ class NumNet:
         return dW1, db1, dW2, db2
     
 
+    def _adam_step(self, param: np.ndarray, grad: np.ndarray, first_moment: np.ndarray, second_moment: np.ndarray,) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Performs a single Adam update step for a given parameter."""
+        first_moment = self.beta1 * first_moment + (1 - self.beta1) * grad
+        second_moment = self.beta2 * second_moment + (1 - self.beta2) * (grad ** 2)
+
+        first_hat = first_moment / (1 - self.beta1 ** self.t)
+        second_hat = second_moment / (1 - self.beta2 ** self.t)
+        param -= self.lr * first_hat / (np.sqrt(second_hat) + self.epsilon)
+
+        return param, first_moment, second_moment
+
+
     def update(self, dW1: np.ndarray, db1: np.ndarray, dW2: np.ndarray, db2: np.ndarray) -> None:
-        """ Applies gradient descent update to all parameters. """
-        self.W1 -= self.lr * dW1
-        self.b1 -= self.lr * db1
-        self.W2 -= self.lr * dW2
-        self.b2 -= self.lr * db2
+        """Apply updates to all parameters."""
+        self.t += 1
+
+        self.W1, self.mW1, self.vW1 = self._adam_step(self.W1, dW1, self.mW1, self.vW1)
+        self.b1, self.mb1, self.vb1 = self._adam_step(self.b1, db1, self.mb1, self.vb1)
+        self.W2, self.mW2, self.vW2 = self._adam_step(self.W2, dW2, self.mW2, self.vW2)
+        self.b2, self.mb2, self.vb2 = self._adam_step(self.b2, db2, self.mb2, self.vb2)
+
+
+    def save(self, path: str) -> None:
+        """Persist the final network parameters for inference-time reuse."""
+        np.savez(
+            path,
+            W1=self.W1,
+            b1=self.b1,
+            W2=self.W2,
+            b2=self.b2,
+        )
+
+
+    @classmethod
+    def load(cls, path: str, cfg: dict) -> "NumNet":
+        """Reconstruct a network from config metadata and saved parameters."""
+        net = cls(
+            input_size=cfg["input_size"],
+            hidden_size=cfg["hidden_size"],
+            output_size=cfg["output_size"],
+            learning_rate=cfg["initial_learning_rate"],
+            beta1=cfg["adam_beta1"],
+            beta2=cfg["adam_beta2"],
+            epsilon=cfg["adam_epsilon"],
+        )
+
+        params = np.load(path)
+        net.W1 = params["W1"]
+        net.b1 = params["b1"]
+        net.W2 = params["W2"]
+        net.b2 = params["b2"]
+        return net
