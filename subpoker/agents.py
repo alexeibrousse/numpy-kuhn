@@ -1,7 +1,10 @@
 import random
 from typing import Optional
 
-from engine import KuhnPokerEnv
+try:
+    from subpoker.engine import KuhnPokerEnv
+except ImportError:
+    from engine import KuhnPokerEnv
 
 
 class Agent():

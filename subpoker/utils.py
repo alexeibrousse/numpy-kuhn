@@ -3,6 +3,7 @@ from datetime import datetime
 import json
 import math
 import pandas as pd
+import numpy as np
 
 def create_run_dir(subdir: str) -> str:
     project_folder = os.path.dirname(os.path.dirname(__file__))
@@ -29,7 +30,7 @@ def steps_to_threshold(start_value: float, threshold: float, decay_rate: float) 
 
 
 
-def parse_episode(row: pd.Series) -> tuple[bool, bool, bool, bool, bool, int, int, int]:
+def parse_episode(row: pd.Series) -> tuple[bool, bool, bool, bool, bool, bool, bool]:
     """Extract common metrics from a logged episode row."""
     history = row.get("history", "")
     actions = history.split("-") if isinstance(history, str) and history else []
@@ -40,14 +41,11 @@ def parse_episode(row: pd.Series) -> tuple[bool, bool, bool, bool, bool, int, in
     value_bet = False
     call = False
     fold = False
-    responded = False
-
     if actions:
         last_idx = len(actions) - 1
         actor_last = (first + last_idx) % 2
         last_action = actions[-1]
         if actor_last == 0 and last_action in ("call", "fold"):
-            responded = True
             if last_action == "call":
                 call = True
             elif last_action == "fold":
@@ -62,4 +60,10 @@ def parse_episode(row: pd.Series) -> tuple[bool, bool, bool, bool, bool, int, in
                 elif hand == 3:
                     value_bet = True
 
-    return bluff, value_bet, call, fold, responded, hand == 1, hand == 2, hand == 3
+    return bluff, value_bet, call, fold, hand == 1, hand == 2, hand == 3
+
+
+def grad_norm(gradients: list[np.ndarray]) -> float:
+    """Compute the L2 norm of a list of gradient arrays."""
+    total = sum(np.sum(g ** 2) for g in gradients)
+    return np.sqrt(total)

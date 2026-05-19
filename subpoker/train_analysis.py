@@ -8,6 +8,13 @@ import json
 import pandas as pd
 import matplotlib.pyplot as plt
 
+FILE_DIR = os.path.dirname(__file__)
+PROJECT_DIR = os.path.dirname(FILE_DIR)
+if PROJECT_DIR not in sys.path:
+    sys.path.append(PROJECT_DIR)
+
+from subpoker.utils import parse_episode
+
 COLUMN_ALIASES = {
     "reward_mean": "reward",
     "baseline_mean": "baseline",
@@ -27,6 +34,7 @@ REQUIRED_COLUMNS = {
     "call_rate": 0.0,
     "bluff_rate": 0.0,
     "value_bet_rate": 0.0,
+    "acted_first": 0.0,
 }
 
 
@@ -47,6 +55,31 @@ def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     if "episode" not in df:
         df["episode"] = range(1, len(df) + 1)
+
+    if "call_rate" not in df:
+        if "is_call" in df:
+            df["call_rate"] = df["is_call"].astype(float)
+        elif "history" in df:
+            parsed = df.apply(parse_episode, axis=1, result_type="expand")
+            parsed.columns = [
+                "is_bluff",
+                "is_value_bet",
+                "is_call",
+                "is_fold",
+                "has_jack",
+                "has_queen",
+                "has_king",
+            ]
+            for col in parsed.columns:
+                if col not in df:
+                    df[col] = parsed[col]
+            df["call_rate"] = df["is_call"].astype(float)
+
+    if "bluff_rate" not in df and "is_bluff" in df:
+        df["bluff_rate"] = df["is_bluff"].astype(float)
+
+    if "value_bet_rate" not in df and "is_value_bet" in df:
+        df["value_bet_rate"] = df["is_value_bet"].astype(float)
 
     for col, default in REQUIRED_COLUMNS.items():
         if col not in df:
@@ -84,7 +117,7 @@ def analyze(df: pd.DataFrame, run_dir: str) -> None:
     training_dir, _, _ = _resolve_paths(run_dir)
     os.makedirs(training_dir, exist_ok=True)
 
-    if df.empty:
+    if len(df) == 0:
         raise ValueError("Training log is empty; no data to analyze.")
 
     n_epochs = len(df)
@@ -105,18 +138,25 @@ def analyze(df: pd.DataFrame, run_dir: str) -> None:
 
     for start in range(0, len(df), interval):
         chunk = df.iloc[start:start + interval]
-        if chunk.empty:
+        if len(chunk) == 0:
             continue
+        opening_chunk = chunk[chunk["acted_first"] > 0]
         episodes.append(int(chunk["episode"].iloc[-1]))
         avg_rewards.append(chunk["reward"].mean())
         baseline_means.append(chunk["baseline"].mean())
         grad_norm_means.append(chunk["grad_norm"].mean())
         entropy_means.append(chunk["entropy"].mean())
         lr_means.append(chunk["learning_rate"].mean())
-        p_check_means.append(chunk["p_check"].mean())
-        p_bet_means.append(chunk["p_bet"].mean())
-        p_call_means.append(chunk["p_call"].mean())
-        p_fold_means.append(chunk["p_fold"].mean())
+        if len(opening_chunk) == 0:
+            p_check_means.append(0.0)
+            p_bet_means.append(0.0)
+            p_call_means.append(0.0)
+            p_fold_means.append(0.0)
+        else:
+            p_check_means.append(opening_chunk["p_check"].mean())
+            p_bet_means.append(opening_chunk["p_bet"].mean())
+            p_call_means.append(opening_chunk["p_call"].mean())
+            p_fold_means.append(opening_chunk["p_fold"].mean())
         call_rates.append(chunk["call_rate"].mean())
         bluff_rates.append(chunk["bluff_rate"].mean())
         value_bet_rates.append(chunk["value_bet_rate"].mean())
@@ -124,6 +164,7 @@ def analyze(df: pd.DataFrame, run_dir: str) -> None:
     # Summary for last 10% of episodes
     recent_count = max(1, int(len(df) * 0.1))
     recent = df.tail(recent_count)
+    recent_opening = recent[recent["acted_first"] > 0]
     avg_reward_last = float(recent["reward"].mean())
     win_rate_last = float((recent["reward"] > 0).mean())
     entropy_last = float(recent["entropy"].mean())
@@ -137,11 +178,11 @@ def analyze(df: pd.DataFrame, run_dir: str) -> None:
             "bluff_rate": round(float(recent["bluff_rate"].mean()), 4),
             "value_bet_rate": round(float(recent["value_bet_rate"].mean()), 4),
         },
-        "first_move_probabilities": {
-            "check": round(float(recent["p_check"].mean()), 4),
-            "bet": round(float(recent["p_bet"].mean()), 4),
-            "call": round(float(recent["p_call"].mean()), 4),
-            "fold": round(float(recent["p_fold"].mean()), 4),
+        "opening_action_probabilities": {
+            "check": round(float(recent_opening["p_check"].mean()), 4) if len(recent_opening) > 0 else 0.0,
+            "bet": round(float(recent_opening["p_bet"].mean()), 4) if len(recent_opening) > 0 else 0.0,
+            "call": round(float(recent_opening["p_call"].mean()), 4) if len(recent_opening) > 0 else 0.0,
+            "fold": round(float(recent_opening["p_fold"].mean()), 4) if len(recent_opening) > 0 else 0.0,
         },
     }
 
@@ -205,7 +246,7 @@ def analyze(df: pd.DataFrame, run_dir: str) -> None:
     plt.savefig(os.path.join(training_dir, "learning_rate.pdf"))
     plt.close()
 
-    # 6. First-move action probabilities
+    # 6. Opening action probabilities
     plt.figure()
     plt.plot(episodes, p_check_means, label="p_check")
     plt.plot(episodes, p_bet_means, label="p_bet")
@@ -213,11 +254,11 @@ def analyze(df: pd.DataFrame, run_dir: str) -> None:
     plt.plot(episodes, p_fold_means, label="p_fold")
     plt.xlabel("Episode")
     plt.ylabel("Probability")
-    plt.title("First-Move Action Probabilities")
+    plt.title("Opening Action Probabilities")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(os.path.join(training_dir, "first_move_probs.pdf"))
+    plt.savefig(os.path.join(training_dir, "opening_action_probs.pdf"))
     plt.close()
 
     # 7. Strategic action rates
