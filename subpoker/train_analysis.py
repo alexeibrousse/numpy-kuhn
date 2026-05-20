@@ -5,6 +5,7 @@ Analyzes logged data from a training run of the NumNet agent and generates graph
 import os
 import sys
 import json
+
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -62,9 +63,9 @@ BOOL_COLUMNS = [
 
 def _resolve_paths(run_dir: str) -> tuple[str, str, str]:
     training_dir = os.path.join(run_dir, "training")
-    summary_path = os.path.join(training_dir, "training_summary.csv")
     full_data_path = os.path.join(training_dir, "full_training_data.csv")
-    return training_dir, summary_path, full_data_path
+    legacy_summary_path = os.path.join(training_dir, "training_summary.csv")
+    return training_dir, full_data_path, legacy_summary_path
 
 
 def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -181,7 +182,7 @@ def _card_summary(df: pd.DataFrame) -> list[dict[str, object]]:
     return summary
 
 
-def _plot_card_action_rates(df: pd.DataFrame, episodes: list[int], interval: int, run_dir: str) -> None:
+def _plot_card_action_rates(df: pd.DataFrame, episodes: list[int], interval: int, output_dir: str) -> None:
     for key, label in CARD_NAMES.items():
         check_rates = []
         bet_rates = []
@@ -216,7 +217,7 @@ def _plot_card_action_rates(df: pd.DataFrame, episodes: list[int], interval: int
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
-        plt.savefig(os.path.join(run_dir, f"{key}_action_rates.pdf"))
+        plt.savefig(os.path.join(output_dir, f"{key}_action_rates.pdf"))
         plt.close()
         
 
@@ -224,21 +225,21 @@ def _plot_card_action_rates(df: pd.DataFrame, episodes: list[int], interval: int
 def load_training_dataframe(run_dir: str, provided_df: pd.DataFrame | None = None) -> pd.DataFrame:
     """
     Load training metrics from disk (or normalize a provided dataframe).
-    Prefers the aggregated training_summary.csv produced by the trainer,
-    but will fall back to the legacy full_training_data.csv if present.
+    Prefers the full per-episode training log produced by the current trainer,
+    but will still fall back to a legacy aggregated CSV if present.
     """
     if provided_df is not None:
         return _normalize_dataframe(provided_df)
 
-    training_dir, summary_path, full_data_path = _resolve_paths(run_dir)
-    if os.path.exists(summary_path):
-        df = pd.read_csv(summary_path)
-    elif os.path.exists(full_data_path):
+    training_dir, full_data_path, legacy_summary_path = _resolve_paths(run_dir)
+    if os.path.exists(full_data_path):
         df = pd.read_csv(full_data_path)
+    elif os.path.exists(legacy_summary_path):
+        df = pd.read_csv(legacy_summary_path)
     else:
         raise FileNotFoundError(
             f"Could not find training logs in {training_dir}. Expected one of: "
-            f"{summary_path} or {full_data_path}"
+            f"{full_data_path} or {legacy_summary_path}"
         )
     return _normalize_dataframe(df)
 
@@ -292,7 +293,7 @@ def analyze(df: pd.DataFrame, run_dir: str) -> None:
         },
     }
 
-    with open(os.path.join(run_dir, "training_summary.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(training_dir, "training_summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=4)
 
 
@@ -304,7 +305,7 @@ def analyze(df: pd.DataFrame, run_dir: str) -> None:
     plt.title("Average Reward Over Time")
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(os.path.join(run_dir, "avg_reward.pdf"))
+    plt.savefig(os.path.join(training_dir, "avg_reward.pdf"))
     plt.close()
 
     # 2. Gradient norm
@@ -330,7 +331,7 @@ def analyze(df: pd.DataFrame, run_dir: str) -> None:
     plt.close()
 
     # 4. Card-specific action rates
-    _plot_card_action_rates(df, episodes, interval, run_dir)
+    _plot_card_action_rates(df, episodes, interval, training_dir)
 
     # 5. Strategic action rates
     plt.figure()
@@ -343,7 +344,7 @@ def analyze(df: pd.DataFrame, run_dir: str) -> None:
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(os.path.join(run_dir, "strategic_rates.pdf"))
+    plt.savefig(os.path.join(training_dir, "strategic_rates.pdf"))
     plt.close()
 
 

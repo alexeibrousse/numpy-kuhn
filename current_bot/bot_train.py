@@ -9,9 +9,12 @@ import subprocess
 from tqdm import trange
 
 FILE_DIR = os.path.dirname(__file__)
-PROJECT_DIR = os.path.dirname(FILE_DIR)
+PACKAGE_DIR = os.path.dirname(FILE_DIR)
+PROJECT_DIR = os.path.dirname(PACKAGE_DIR)
 if FILE_DIR not in sys.path:
     sys.path.append(FILE_DIR)
+if PACKAGE_DIR not in sys.path:
+    sys.path.append(PACKAGE_DIR)
 if PROJECT_DIR not in sys.path:
     sys.path.append(PROJECT_DIR)
 
@@ -44,7 +47,7 @@ Seeds for reproducibility:
 # ————— Hyperparameters ————— #
 
 n_epochs = 500000
-learning_rate = 5e-6
+learning_rate = 5e-5
 adam_beta1 = 0.9
 adam_beta2 = 0.999
 adam_epsilon = 1e-8
@@ -70,7 +73,7 @@ initial_entropy_coeff = 0.01
 use_entropy_decay = True
 entropy_coeff = initial_entropy_coeff if use_entropy_bonus else 0.0
 use_gradient_clipping = True
-gradient_clip = 7.0
+gradient_clip = 10.0
 
 
 
@@ -463,7 +466,7 @@ if __name__ == "__main__":
     main()
     nn.save(os.path.join(RUN_DIR, "model.npz"))
     print("1/3 - Training completed.")
-    analysis_script = os.path.join(FILE_DIR, "train_analysis.py")
+    analysis_script = os.path.join(PACKAGE_DIR, "subpoker", "train_analysis.py")
     subprocess.run([sys.executable, analysis_script, RUN_DIR], check=True)
     print("2/3 - Analysis completed.")
     testing_script = os.path.join(FILE_DIR, "bot_test.py")

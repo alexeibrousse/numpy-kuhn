@@ -12,10 +12,13 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+from tqdm import trange
 
 FILE_DIR = os.path.dirname(__file__)
-PROJECT_DIR = os.path.dirname(FILE_DIR)
+PACKAGE_DIR = os.path.dirname(FILE_DIR)
+PROJECT_DIR = os.path.dirname(PACKAGE_DIR)
+if PACKAGE_DIR not in sys.path:
+    sys.path.append(PACKAGE_DIR)
 if PROJECT_DIR not in sys.path:
     sys.path.append(PROJECT_DIR)
 
@@ -75,13 +78,26 @@ def load_model(run_dir: str, config: dict) -> NumNet:
 
 
 def encode_state(state: dict) -> np.ndarray:
-    """Encode the game state into the same 12D vector used during training."""
+    """
+    Encodes the game state into a 12-dimensional vector.
+    The first three dimensions represent the player's card as one-hot:
+        [0, 0, 1] is King
+        [0, 1, 0] is Queen
+        [1, 0, 0] is Jack
+    The remaining nine dimensions encode the current history as a one-hot
+    over the 9 valid history patterns defined in `VALID_HISTORIES`.
+    """
     hand = state["hand"]
-    hand_vec = [1.0 if (i + 1) == hand else 0.0 for i in range(3)]
-    history = tuple(state["history"])
-    history_index = VALID_HISTORIES[history]
-    history_vec = [1.0 if i == history_index else 0.0 for i in range(9)]
-    return np.array(hand_vec + history_vec, dtype=float)
+    history = state["history"]
+
+    card_vec = [0, 0, 0]
+    card_vec[hand - 1] = 1
+
+    history = tuple(history)
+    action_index = VALID_HISTORIES[history]
+    history_vec = [1.0 if i == action_index else 0.0 for i in range(9)]
+
+    return np.concatenate([card_vec, history_vec])
 
 
 def sample_action(probs: np.ndarray, legal_actions: list[int]) -> int:
@@ -141,66 +157,74 @@ def main(argv: list[str] | None = None) -> None:
         3: {CALL: 0, FOLD: 0},
     }
 
-    with tqdm(total=EPISODES_CYCLES, desc="Testing") as pbar:
-        for seed in SEEDS:
+    initial_seed = SEEDS[0]
+    fix_seed(initial_seed)
+    env = Env(initial_seed)
+    nn = load_model(run_dir, config)
+    agent = NashAgent(alpha=0.333, random_seed=initial_seed)
+    
+    for episode_idx in trange(TOTAL_TEST_EPISODES, desc="Testing"):
+        seed_idx, offset = divmod(episode_idx, EPISODES_CYCLES * len(FIRST_PLAYERS))
+        _, fp_idx = divmod(offset, len(FIRST_PLAYERS))
+        seed = SEEDS[seed_idx]
+        fp = FIRST_PLAYERS[fp_idx]
+
+        if offset == 0:
             fix_seed(seed)
             env = Env(seed)
             nn = load_model(run_dir, config)
             agent = NashAgent(alpha=0.333, random_seed=seed)
 
-            for _ in range(EPISODES_CYCLES):
-                for fp in FIRST_PLAYERS:
-                    env.reset()
-                    env.first_player = fp
-                    env.current_player = fp
-                    done = False
+        env.reset()
+        env.first_player = fp
+        env.current_player = fp
+        done = False
+        rewards = [0, 0]
 
-                    while not done:
-                        state = env.get_state()
-                        legal = env.legal_actions()
+        while not done:
+            state = env.get_state()
+            legal = env.legal_actions()
 
-                        if state["player"] == 0:
-                            x = encode_state(state)
-                            probs = nn.forward(x)
-                            action = sample_action(probs, legal)
-                        else:
-                            action = agent.act(state, legal)
+            if state["player"] == 0:
+                x = encode_state(state)
+                probs = nn.forward(x)
+                action = sample_action(probs, legal)
+            else:
+                action = agent.act(state, legal)
 
-                        _, rewards, done, _ = env.step(action)
+            _, rewards, done, _ = env.step(action)
 
-                    reward = rewards[0]  # type: ignore[index]
-                    rewards_list.append(reward)
-                    history = env.history.copy()
-                    hand = env.hands[0]
-                    opp_hand = env.hands[1]
+        reward = rewards[0]  # type: ignore[index]
+        rewards_list.append(reward)
+        history = env.history.copy()
+        hand = env.hands[0]
+        opp_hand = env.hands[1]
 
-                    hands_log.append(hand)
-                    opp_hands_log.append(opp_hand)
-                    first_player_log.append(fp)
-                    histories_log.append(history)
+        hands_log.append(hand)
+        opp_hands_log.append(opp_hand)
+        first_player_log.append(fp)
+        histories_log.append(history)
 
-                    if fp == 0 and history:
-                        opening_action = history[0]
-                        if opening_action in (BET, CHECK):
-                            opening_counts[hand][opening_action] += 1
+        if fp == 0 and history:
+            opening_action = history[0]
+            if opening_action in (BET, CHECK):
+                opening_counts[hand][opening_action] += 1
 
-                        if len(history) >= 3:
-                            response_action = history[2]
-                            if response_action in (CALL, FOLD):
-                                facing_check_bet_counts[hand][response_action] += 1
+            if len(history) >= 3:
+                response_action = history[2]
+                if response_action in (CALL, FOLD):
+                    facing_check_bet_counts[hand][response_action] += 1
 
-                    if fp == 1:
-                        if history and history[0] == CHECK and len(history) >= 2:
-                            after_check_action = history[1]
-                            if after_check_action in (BET, CHECK):
-                                after_check_counts[hand][after_check_action] += 1
+        if fp == 1:
+            if history and history[0] == CHECK and len(history) >= 2:
+                after_check_action = history[1]
+                if after_check_action in (BET, CHECK):
+                    after_check_counts[hand][after_check_action] += 1
 
-                        if history and history[0] == BET and len(history) >= 2:
-                            response_action = history[1]
-                            if response_action in (CALL, FOLD):
-                                facing_open_bet_counts[hand][response_action] += 1
-
-                    pbar.update(1)
+            if history and history[0] == BET and len(history) >= 2:
+                response_action = history[1]
+                if response_action in (CALL, FOLD):
+                    facing_open_bet_counts[hand][response_action] += 1
 
     def pct(a: int, b: int) -> float:
         total = a + b
